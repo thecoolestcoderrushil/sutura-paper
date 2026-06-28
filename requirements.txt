@@ -1,0 +1,22 @@
+# Sutura tear-benchmark — core stack (Python 3.12 compatible)
+torch>=2.2
+torch-geometric>=2.5
+anndata>=0.10
+scanpy>=1.10
+numpy>=1.26
+scipy>=1.11
+scikit-learn>=1.4
+matplotlib>=3.8
+pandas>=2.1
+requests>=2.31
+
+# -----------------------------------------------------------------------------
+# Optional baselines (only needed to RE-RUN the competing methods; the published
+# result CSVs in results/ were produced with these). Each benchmark wrapper guards
+# its import and exits with an install hint if the dependency is missing.
+# -----------------------------------------------------------------------------
+# paste2          # PASTE2 partial fused Gromov-Wasserstein (benchmarks/paste2_baseline.py)
+# stalign         # STalign diffeomorphic LDDMM (benchmarks/stalign_baseline.py)
+# gpsa            # GPSA Gaussian-Process Spatial Alignment (benchmarks/gpsa_baseline.py)
+#                 # NOTE: install GPSA WITHOUT its pinned deps so it uses this
+#                 # repo's torch>=2.2 stack:   pip install gpsa --no-deps
