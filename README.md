@@ -125,6 +125,82 @@ python train.py --train-pairs 151507/151508,151669/151670 \
 Each run writes `results/<out>_test_curve.csv`, `results/<out>_train_curve.csv`,
 and `results/<out>.pt`.
 
+## How to use the Sutura model
+
+Sutura registers a **moving** slice **B** onto a **reference** slice **A**: for
+every spot in B it predicts that spot's coordinate in A's frame. A runnable
+end-to-end notebook is in [`examples/quick_inference.ipynb`](examples/quick_inference.ipynb);
+the same flow in code:
+
+```python
+import numpy as np, torch, anndata as ad
+from scipy.spatial import cKDTree
+
+from model import load_checkpoint          # build model + load weights
+from train import fit_shared_basis, graph_tensors   # feature + graph helpers
+from metrics import registration_error_stats        # optional: scoring
+from model.contrastive import partner_index         # optional: array-bridge GT
+
+# 1) Load a pretrained checkpoint -------------------------------------------
+model, ckpt = load_checkpoint("checkpoints/sutura_insample.pt")  # model.eval()
+knn     = ckpt["args"].get("knn", 6)
+pca_dim = ckpt["args"].get("pca_dim", 50)
+
+# 2) Load a pair of slices (AnnData; .X counts, .obsm["spatial"] (n,2) px) ---
+A = ad.read_h5ad("data/DLPFC_151507.h5ad")   # reference  (fixed frame)
+B = ad.read_h5ad("data/DLPFC_151508.h5ad")   # moving     (to be aligned to A)
+a_coords = np.asarray(A.obsm["spatial"], np.float32)
+b_coords = np.asarray(B.obsm["spatial"], np.float32)
+
+# spot pitch (median nearest-neighbour distance) = the model's length unit
+pitch = float(np.median(cKDTree(a_coords).query(a_coords, k=2)[0][:, 1]))
+
+# 3) Features (shared SVD basis on the pair) + graphs.
+#    Use the mode the checkpoint was trained with (shipped checkpoints: "global";
+#    batch-robust cross-donor models trained with --feature-mode perslice: "perslice").
+feat_mode = ckpt["args"].get("feature_mode") or "global"
+project = fit_shared_basis([A, B], pca_dim, seed=0, feature_mode=feat_mode)
+ga = graph_tensors(a_coords, project(A), knn, pitch)
+gb = graph_tensors(b_coords, project(B), knn, pitch)
+a_norm = torch.from_numpy(a_coords / pitch)
+
+# 4) Inference --------------------------------------------------------------
+with torch.no_grad():
+    pred_A = model(ga, gb, a_norm).numpy() * pitch   # (n_B, 2) pixels in A's frame
+```
+
+**Input requirements**
+
+- Two `AnnData` objects (reference A, moving B) that share the **same gene set**
+  (intersect `var_names` first if they differ).
+- `.X`: spot × gene counts (raw or normalized — the loader log-normalizes).
+- `.obsm["spatial"]`: `(n, 2)` spot pixel coordinates.
+- For the optional array-bridge ground truth only: `obs["array_row"]`,
+  `obs["array_col"]` (present in spatialLIBD). CPU is sufficient.
+
+**Output format**
+
+- `pred_A`: `numpy.ndarray` of shape `(n_B, 2)`, **predicted reference-frame pixel
+  coordinates**, one row per moving-slice spot, in B's spot order. To overlay B
+  on A, plot `pred_A` against A's `obsm["spatial"]`; to "register" B, replace
+  `B.obsm["spatial"]` with `pred_A`. Errors/coordinates are in **pixels**
+  (1 spot pitch ≈ 137 px on this dataset).
+
+**Interpreting / scoring the output** (optional, needs array indices)
+
+```python
+p = partner_index(A, B)                 # B->A index via shared array position (-1 if none)
+have = p >= 0
+gt = np.full((B.n_obs, 2), np.nan, np.float32); gt[have] = a_coords[p[have]]
+print(registration_error_stats(pred_A, gt, mask=have))
+# -> {'median': ~99, 'mean': ..., 'p90': ..., 'n': ...}  (px; lower is better)
+```
+
+> Note: `sutura_insample.pt` was trained on the 151507/151508 pair, so it is most
+> accurate there. On an **unseen donor** expect larger error — cross-donor
+> generalization is the open problem characterized in the paper (use
+> `sutura_contrastive_S1.pt` for the contrastive variant).
+
 ## Citation
 
 ```bibtex

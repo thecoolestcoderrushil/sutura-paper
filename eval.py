@@ -68,11 +68,16 @@ def eval_sutura(args, severities):
     a_coords = np.asarray(A.obsm["spatial"], np.float32)
     pitch = float(np.median(cKDTree(a_coords).query(a_coords, k=2)[0][:, 1]))
 
-    # features: a shared TruncatedSVD basis on the eval pair (per-slice standardized
-    # to stay robust to donor batch shift, matching the perslice training mode).
+    # features: a shared TruncatedSVD basis on the eval pair. Use the feature mode
+    # the checkpoint was trained with (in-sample / contrastive checkpoints are
+    # "global"; batch-robust LODO models are "perslice"); --feature-mode overrides.
     from train import fit_shared_basis, graph_tensors
+    feature_mode = (args.feature_mode
+                    or ckpt.get("args", {}).get("feature_mode")
+                    or "global")
+    print(f"  feature_mode={feature_mode}")
     project = fit_shared_basis([A, B], pca_dim, ckpt.get("args", {}).get("seed", 0),
-                               feature_mode="perslice")
+                               feature_mode=feature_mode)
     Z_A, Z_B = project(A), project(B)
     p = partner_index(A, B)
     gt_A = np.full((B.n_obs, 2), np.nan, np.float32)
@@ -123,6 +128,9 @@ def main():
     ap.add_argument("--sample", default="151508")
     ap.add_argument("--checkpoint", default="",
                     help="Sutura: explicit checkpoint .pt (overrides flags)")
+    ap.add_argument("--feature-mode", default="", choices=["", "global", "perslice"],
+                    help="Sutura: SVD feature standardization "
+                         "(default: checkpoint's mode, else global)")
     ap.add_argument("--eval-seed", type=int, default=0)
     ap.add_argument("--out", default="",
                     help="output CSV name (default: <method>_eval.csv)")
