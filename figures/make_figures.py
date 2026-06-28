@@ -41,6 +41,24 @@ def read(path, ycol, xcol="severity"):
     return np.array(xs), np.array(ys)
 
 
+def paste2_5seed_ci():
+    """PASTE2 in-sample tear: mean +/- 95% CI of median over 5 warp seeds
+    (sev 0/4/8), from sweep_deformation_ms_tear_seed*.csv."""
+    seeds = [0, 9999, 10000, 10001, 10002]
+    by_sev = {}
+    for s in seeds:
+        f = RES / f"sweep_deformation_ms_tear_seed{s}.csv"
+        if not f.exists():
+            return None, None, None
+        x, y = read(f, "reg_err_median")
+        for xi, yi in zip(x, y):
+            by_sev.setdefault(xi, []).append(yi)
+    sev = sorted(by_sev)
+    mean = np.array([np.mean(by_sev[s]) for s in sev])
+    ci = np.array([1.96 * np.std(by_sev[s]) / np.sqrt(len(by_sev[s])) for s in sev])
+    return np.array(sev), mean, ci
+
+
 def style(ax):
     ax.set_facecolor("white")
     for sp in ("top", "right"):
@@ -67,6 +85,11 @@ def fig1(path, add_smooth=False):
     # PASTE2 (OT) tear
     px, py = read(RES / "sweep_deformation_cross_tear.csv", "reg_err_median")
     ax.plot(px, py, color=C["paste2"], marker="s", ms=4, lw=2, label="PASTE2 (OT)")
+    # PASTE2 5-seed CI (sev 0/4/8) overlaid on the single-seed line
+    cx, cm, cci = paste2_5seed_ci()
+    if cx is not None:
+        ax.errorbar(cx, cm, yerr=cci, color=C["paste2"], fmt="none", capsize=3, lw=1.5,
+                    zorder=6)
     # STalign (LDDMM)
     tx, ty = read(RES / "stalign_tear.csv", "reg_err_median")
     ax.plot(tx, ty, color=C["stalign"], marker="^", ms=5, lw=2,
