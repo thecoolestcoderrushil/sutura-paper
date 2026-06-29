@@ -51,7 +51,7 @@ requirements.txt, LICENSE, .gitignore
 ## Installation
 
 ```bash
-git clone https://github.com/thecoolestcoderrushil/sutura-paper
+git clone https://github.com/Sutura-Genomics/sutura-paper
 cd sutura-paper
 pip install -r requirements.txt
 ```
