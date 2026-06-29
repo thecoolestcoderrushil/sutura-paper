@@ -9,6 +9,7 @@ scikit-learn>=1.4
 matplotlib>=3.8
 pandas>=2.1
 requests>=2.31
+harmonypy>=0.0.9   # donor-batch-correction ablation (--feature-mode harmony)
 
 # -----------------------------------------------------------------------------
 # Optional baselines (only needed to RE-RUN the competing methods; the published

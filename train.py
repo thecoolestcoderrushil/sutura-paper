@@ -86,17 +86,64 @@ def lognorm(adata):
     return np.log1p(X * (1e4 / counts[:, None]))
 
 
-def fit_shared_basis(train_slices, dim, seed, feature_mode="global"):
-    """Fit ONE TruncatedSVD basis on the lognorm expression of the training
-    slices stacked together. Returns a closure that projects any slice (with the
-    same gene set) into this fixed basis (see module docstring for feature-mode)."""
+DONOR_OF = {"151507": "S1", "151508": "S1", "151669": "S2", "151670": "S2",
+            "151673": "S3", "151674": "S3"}
+
+
+def fit_shared_basis(train_slices, dim, seed, feature_mode="global",
+                     test_slices=None, train_ids=None, test_ids=None):
+    """Fit ONE TruncatedSVD basis on the lognorm expression of the TRAINING
+    slices. Returns project(adata, sid) -> standardized embedding.
+
+    feature_mode:
+      global   : training pooled mean/std (a held-out donor with a batch shift
+                 lands off-distribution).
+      perslice : per-slice mean/std (cheap embedding-space batch correction).
+      harmony  : Harmony DONOR-batch correction of the SVD embedding, fit jointly
+                 over ALL slices (train + held-out) with batch=donor, then global-
+                 standardized on the training portion. Transductive but UNSUPERVISED
+                 (uses held-out expression, never its correspondence labels), so it
+                 directly targets the cross-donor shift diagnosed as the failure
+                 cause. Requires train_ids + test_ids (one sample id per slice)."""
     mats = [lognorm(a) for a in train_slices]
     stacked = svstack(mats) if issparse(mats[0]) else np.vstack(mats)
     svd = TruncatedSVD(n_components=dim, random_state=seed).fit(stacked)
     Ztr = svd.transform(stacked)
     mu, sd = Ztr.mean(0), Ztr.std(0) + 1e-6
 
-    def project(adata):
+    if feature_mode == "harmony":
+        import pandas as pd
+        import harmonypy
+        all_slices = list(train_slices) + list(test_slices or [])
+        all_ids = list(train_ids or []) + list(test_ids or [])
+        if len(all_ids) != len(all_slices):
+            raise ValueError("harmony mode needs a sample id for every slice")
+        Zall = np.vstack([svd.transform(lognorm(a)).astype(np.float32)
+                          for a in all_slices])
+        donor = []
+        for a, sid in zip(all_slices, all_ids):
+            donor += [DONOR_OF.get(sid, sid)] * a.n_obs
+        meta = pd.DataFrame({"donor": donor})
+        ho = harmonypy.run_harmony(Zall, meta, ["donor"])
+        Zc = np.asarray(ho.Z_corr, dtype=np.float32)             # orient to (Ntot,dim)
+        if Zc.shape != (Zall.shape[0], dim):                     # harmonypy versions
+            Zc = Zc.T                                            # differ: (dim,N) vs (N,dim)
+        assert Zc.shape == (Zall.shape[0], dim), f"Z_corr shape {Zc.shape}"
+        ntr = sum(a.n_obs for a in train_slices)
+        mu_h, sd_h = Zc[:ntr].mean(0), Zc[:ntr].std(0) + 1e-6     # train stats
+        corrected, off = {}, 0
+        for a, sid in zip(all_slices, all_ids):
+            n = a.n_obs
+            corrected[sid] = ((Zc[off:off + n] - mu_h) / sd_h).astype(np.float32)
+            off += n
+
+        def project(adata, sid=None):
+            if sid not in corrected:
+                raise KeyError(f"harmony: no corrected embedding for sid={sid}")
+            return corrected[sid]
+        return project
+
+    def project(adata, sid=None):
         Z = svd.transform(lognorm(adata)).astype(np.float32)
         if feature_mode == "perslice":
             m, s = Z.mean(0), Z.std(0) + 1e-6          # this slice's own stats
@@ -144,7 +191,7 @@ def build_pair(ref_id, smp_id, project, knn, data_dir, sigma_pitch):
     a_coords = np.asarray(A.obsm["spatial"], np.float32)
     pitch = float(np.median(cKDTree(a_coords).query(a_coords, k=2)[0][:, 1]))
 
-    Z_A, Z_B = project(A), project(B)
+    Z_A, Z_B = project(A, ref_id), project(B, smp_id)
     gt_A, have = array_bridge(A, B)
     ga = graph_tensors(a_coords, Z_A, knn, pitch)
     p = partner_index(A, B)
@@ -208,9 +255,10 @@ def main() -> None:
                     help="comma list of ref/sample donor pairs to TRAIN on")
     ap.add_argument("--test-pair", default="151669/151670",
                     help="held-out ref/sample pair to EVALUATE on")
-    ap.add_argument("--feature-mode", choices=["global", "perslice"],
+    ap.add_argument("--feature-mode", choices=["global", "perslice", "harmony"],
                     default="global",
-                    help="SVD-embedding standardization (see module docstring)")
+                    help="SVD-embedding standardization / batch correction "
+                         "(see module docstring)")
     ap.add_argument("--readout", choices=["cosine", "attn"], default="cosine")
     ap.add_argument("--lambda-contrastive", type=float, default=0.0,
                     help="weight of the contrastive loss (0 = coordinate only)")
@@ -250,8 +298,15 @@ def main() -> None:
                    ad.read_h5ad(data_dir / f"DLPFC_{test_smp}.h5ad")]
     assert_same_genes(train_slices + test_slices)
 
-    project = fit_shared_basis(train_slices, args.pca_dim, args.seed,
-                               feature_mode=args.feature_mode)
+    if args.feature_mode == "harmony":
+        train_ids = [sid for pair in train_pairs for sid in pair]
+        project = fit_shared_basis(train_slices, args.pca_dim, args.seed,
+                                   feature_mode="harmony", test_slices=test_slices,
+                                   train_ids=train_ids,
+                                   test_ids=[test_ref, test_smp])
+    else:
+        project = fit_shared_basis(train_slices, args.pca_dim, args.seed,
+                                   feature_mode=args.feature_mode)
     pairs = [build_pair(r, s, project, args.knn, data_dir, args.target_sigma)
              for r, s in train_pairs]
     test = build_pair(test_ref, test_smp, project, args.knn, data_dir,

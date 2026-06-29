@@ -17,10 +17,15 @@ a graph cross-attention registration model that learns the tear discontinuity.
 Sutura fits torn tissue **in-sample** (median registration error ~99 -> 106 px
 across tear severities 0 -> 8, well under the 137 px spot pitch), while PASTE2,
 STalign, and GPSA degrade to many hundreds of pixels. **Cross-donor
-generalisation remains open**: a contrastive correspondence loss roughly halves
-the held-out gap on 2 of 3 donors but does not beat PASTE2 on unseen tissue. We
-report this honestly — the in-sample result is the contribution; cross-donor
-transfer is future work.
+generalisation remains open**, and two batch-invariance levers were tested without
+closing it. A contrastive correspondence loss roughly halves the held-out gap on 2
+of 3 donors. Harmony donor-batch correction of the SVD embedding (the `harmony`
+feature mode) narrows the held-out gap on 2 of 3 donors (severity-0 median: S3
+1310 to 1190 px, S2 1181 to 1167 px) but worsens the third (S1 1125 to 1225 px),
+and like the contrastive variant it never beats unsupervised PASTE2 on unseen
+tissue (held-out Sutura stays roughly 1.9 to 3.0x PASTE2's error). We report this
+honestly. The in-sample result is the contribution; cross-donor transfer is future
+work.
 
 ## Repository layout
 
@@ -39,12 +44,13 @@ benchmarks/
 data/
   load_spatiallibd.py  DLPFC downloader/standardizer (Figshare article 22004273)
 metrics.py          registration error, barycentric/argmax projection, label transfer
-train.py            unified training: in-sample / leave-one-donor-out / contrastive
+train.py            unified training: in-sample / leave-one-donor-out / contrastive / harmony
 eval.py             evaluation CLI dispatching to any method on the tear severity grid
 figures/            paper figures (PNG) + make_figures.py (reads results/, writes figures/)
 results/            published result CSVs (all methods, all folds)
 checkpoints/        sutura_insample.pt, sutura_contrastive_S1.pt
 reproduce_figures.sh, reproduce_figure{1,2,3,4}.sh
+run_harmony_lodo.sh, aggregate_harmony_lodo.py   Harmony-vs-perslice LODO ablation
 requirements.txt, LICENSE, .gitignore
 ```
 
@@ -120,6 +126,9 @@ python train.py --train-pairs 151507/151508 --test-pair 151669/151670 \
 python train.py --train-pairs 151507/151508,151669/151670 \
     --test-pair 151673/151674 --readout cosine --lambda-contrastive 0.5 \
     --out sutura_contrastive_S3
+
+# Harmony donor-batch-correction ablation: all 3 folds, perslice vs harmony
+bash run_harmony_lodo.sh && python aggregate_harmony_lodo.py
 ```
 
 Each run writes `results/<out>_test_curve.csv`, `results/<out>_train_curve.csv`,
